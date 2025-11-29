@@ -25,12 +25,16 @@ function createSupabaseAdminClient(): SupabaseClient<Database> {
   return createClient<Database>(supabaseUrl, serviceRoleKey)
 }
 
-export const supabase: SupabaseClient<Database> = (() => {
+// Lazy-loaded Supabase client - only initialized when needed
+export function getSupabase(): SupabaseClient<Database> {
   if (!supabaseInstance) {
     supabaseInstance = createSupabaseClient()
   }
   return supabaseInstance
-})()
+}
+
+// For backward compatibility, but lazy-loaded
+export const supabase = getSupabase
 
 // For server-side operations with elevated permissions - lazy loaded
 export function getSupabaseAdmin(): SupabaseClient<Database> {
