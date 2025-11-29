@@ -2,12 +2,16 @@
 
 import * as React from "react"
 import type { User, Project, Allocation } from "@/lib/types"
-import { getCurrentUser, getCurrentUserData, getCurrentSystemUser } from "@/lib/storage"
+import { UserService } from "@/lib/supabase-users"
+import { ProjectService, ProjectWithEntity } from "@/lib/supabase-projects"
+import { AllocationService } from "@/lib/supabase-allocations"
+import { EntityService } from "@/lib/supabase-entities"
 import { canEditPage, UserRole } from "@/lib/permissions"
 import { getSharedMonthYear, setSharedMonthYear } from "@/lib/shared-state"
 import { Button } from "@/components/ui/button"
 import { Navigation } from "@/components/navigation"
 import Link from "next/link"
+import type { User as SupabaseUser, Project as SupabaseProject, Allocation as SupabaseAllocation, Entity as SupabaseEntity } from "@/lib/supabase"
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -62,29 +66,60 @@ export default function ExpenseAllocationPage() {
     setIsClient(true)
   }, [])
 
-  // Load user data on component mount
+  // Load data from Supabase on component mount
   React.useEffect(() => {
-    const user = getCurrentUser()
-    const systemUser = getCurrentSystemUser()
-    if (!user || !systemUser) {
-      window.location.href = "/login"
-      return
-    }
-    
-    setCurrentUser(user)
-    setCurrentUserRole(systemUser.role)
+    const loadSupabaseData = async () => {
+      try {
+        // For now, we'll use a mock current user since we don't have auth integrated yet
+        const mockUserEmail = "john.doe@example.com" // You can replace this with actual auth later
+        setCurrentUser(mockUserEmail)
+        setCurrentUserRole('admin') // Default role for testing
 
-    // Load data from localStorage
-    const userData = getCurrentUserData()
-    setUsers(userData.users || [])
-    setProjects(userData.projects || [])
-    setAllocations(userData.allocations || [])
+        // Load data from Supabase
+        const [fetchedUsers, fetchedProjects, fetchedAllocations, fetchedEntities] = await Promise.all([
+          UserService.getUsers(),
+          ProjectService.getProjects(),
+          AllocationService.getAllocationsWithDetails(),
+          EntityService.getEntities()
+        ])
+
+        // Transform Supabase data to match the expected format
+        const transformedUsers = fetchedUsers.map((user: SupabaseUser) => ({
+          ...user,
+          entity: fetchedEntities.find(e => e.id === user.department)?.name || user.department || 'Unassigned',
+          department: user.department || 'Unassigned'
+        }))
+
+        const transformedProjects = fetchedProjects.map((project: ProjectWithEntity) => ({
+          ...project,
+          entity: fetchedEntities.find(e => e.id === project.entity_id)?.name || 'Unassigned'
+        }))
+
+        // Transform allocations to match the expected Allocation type
+        const transformedAllocations = fetchedAllocations.map((alloc: any) => ({
+          ...alloc,
+          userId: alloc.user_id,
+          projectId: alloc.project_id,
+          monthIndex: alloc.month_index
+        }))
+
+        setUsers(transformedUsers as any)
+        setProjects(transformedProjects as any)
+        setAllocations(transformedAllocations as any)
+      } catch (error) {
+        console.error('Error loading Supabase data:', error)
+      }
+    }
+
+    loadSupabaseData()
   }, [])
 
   // Load expense allocation data when month changes or user is set
   React.useEffect(() => {
     if (!currentUser) return
     
+    // For now, we'll use localStorage for expense rows as a temporary solution
+    // In the future, you might want to create a separate table for expense allocations
     const monthKey = `${selectedYear}-${selectedMonth}`
     const savedExpenseRows = localStorage.getItem(`sola-expense-allocation-${currentUser}-${monthKey}`)
     if (savedExpenseRows) {
@@ -103,6 +138,7 @@ export default function ExpenseAllocationPage() {
   React.useEffect(() => {
     if (!currentUser) return
     
+    // For now, we'll use localStorage for expense rows as a temporary solution
     const monthKey = `${selectedYear}-${selectedMonth}`
     localStorage.setItem(`sola-expense-allocation-${currentUser}-${monthKey}`, JSON.stringify(expenseRows))
   }, [expenseRows, selectedMonth, selectedYear, currentUser])
@@ -128,7 +164,7 @@ export default function ExpenseAllocationPage() {
       entityGroups[entity].push(user)
     })
 
-    // Calculate entity allocation by averaging user percentages (not total hours)
+    // Calculate entity allocation by averaging user percentages from Supabase allocations
     const entityProjectAllocations: Record<string, Record<string, number>> = {}
 
     Object.entries(entityGroups).forEach(([entity, entityUsers]) => {
@@ -138,18 +174,18 @@ export default function ExpenseAllocationPage() {
         const userPercentages: number[] = []
         
         entityUsers.forEach(user => {
-          // Get project data from user's projectDataByMonth
-          const monthKey = `${selectedYear}-${selectedMonth}`
-          const projectData = (user as any).projectDataByMonth?.[monthKey] || {}
-          const userProjectHours = projectData[project.id] || 0
+          // Get allocations for this user and project for the selected month
+          const userAllocations = allocations.filter((alloc: any) => 
+            alloc.user_id === user.id && 
+            alloc.project_id === project.id && 
+            alloc.month_index === selectedMonth
+          )
           
-          // Calculate this user's total hours across all projects
-          const totalUserHours = activeProjects.reduce((total, p) => total + (projectData[p.id] || 0), 0)
+          // Sum up all allocation percentages for this user-project-month combination
+          const totalAllocationPercentage = userAllocations.reduce((sum: number, alloc: any) => sum + (alloc.percentage || 0), 0)
           
-          // Calculate this user's percentage for this project
-          if (totalUserHours > 0) {
-            const userPercentage = (userProjectHours / totalUserHours) * 100
-            userPercentages.push(userPercentage)
+          if (totalAllocationPercentage > 0) {
+            userPercentages.push(totalAllocationPercentage)
           }
         })
         
